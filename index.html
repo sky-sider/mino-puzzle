@@ -351,6 +351,17 @@ dialog#save-share-dialog[open]{display:flex;flex-direction:column;overflow:hidde
 #save-share-dialog .sync-actions{padding:10px 14px max(12px,env(safe-area-inset-bottom,0px));background:#f5fbff;flex:none;border-top:1px solid #d4e8f3}
 #save-share-dialog .sync-actions .act{width:100%;min-height:46px;font-size:14px;background:linear-gradient(#6be4f7,#34bfe7);color:#064867;border:1.5px solid #2b9ac0}
 @media(max-height:560px){#save-share-dialog .sync-title{padding:9px 13px}#save-share-dialog .sync-main{padding:8px 12px}#save-share-dialog .sync-step{padding:8px 10px}}
+/* v25: locked hint pieces and reset confirmation */
+#reset-dialog{max-width:410px;text-align:left;padding:20px 18px 17px;width:min(94vw,410px)}
+#reset-dialog h2{text-align:center;font-size:20px;color:#297ba8;margin:3px 0 11px}
+#reset-dialog p{font-size:14px;line-height:1.65;margin:0 0 15px;color:#41637b}
+.reset-all-choice{display:flex;align-items:flex-start;gap:11px;min-height:72px;padding:13px 11px;border:1.5px solid #a9d4e9;border-radius:14px;background:#f0fbff;cursor:pointer}
+.reset-all-choice input{width:23px;height:23px;flex:none;margin:1px 0 0;accent-color:#218bb8}
+.reset-all-choice span{display:flex;flex-direction:column;gap:5px}
+.reset-all-choice strong{font-size:14px;line-height:1.4;color:#265f86}
+.reset-all-choice small{font-size:12px;line-height:1.5;color:#5d7182}
+.reset-actions{display:flex;gap:9px;margin-top:16px}
+.reset-actions .act{flex:1;min-height:44px;font-size:14px;border-radius:14px}
 </style></head>
 <body><div id="app">
 <header class="header"><div class="brand"><h1>Mino Puzzle 2800</h1></div><button class="light-btn" id="howto" type="button">？ あそび方</button></header>
@@ -423,6 +434,7 @@ dialog#save-share-dialog[open]{display:flex;flex-direction:column;overflow:hidde
       <ul>
         <li>盤面外にも置けます。配置したピースは何度でも動かせます。</li>
         <li>2本指で拡大・縮小。拡大中は空白をドラッグして画面を移動できます。</li>
+        <li>ヒントで置いたピースは🔒ロックされ、操作ミスでは動きません。「やり直す」では通常そのまま残ります。</li>
         <li>ヒントは各問題のピースの約1/4まで。やり直しても新しいヒント枠は増えません。</li>
         <li>ランダム出題は未クリアを優先します。</li>
         <li>ペントミノ・スクエアの透明ピースも自由に動かします。</li>
@@ -432,6 +444,12 @@ dialog#save-share-dialog[open]{display:flex;flex-direction:column;overflow:hidde
   <div class="buttons help-actions"><button type="button" class="act" id="save-share-open">⇄ セーブ共有</button><button type="button" class="act primary" id="help-close">あそぶ！</button></div>
 </dialog>
 <dialog id="win"><div class="confetti">★ ✦ ★ ✦ ★</div><h2>ぴったり、完成！</h2><p id="win-text"></p><div class="buttons"><button type="button" class="act" id="win-close">この問題を見る</button><button type="button" class="act primary" id="win-next">次の問題 ▶</button><button type="button" class="act" id="win-random">🎲 ランダム</button></div></dialog>
+<dialog id="reset-dialog" aria-labelledby="reset-dialog-title" aria-describedby="reset-dialog-info">
+ <h2 id="reset-dialog-title">この問題をやり直す？</h2>
+ <p id="reset-dialog-info">通常は、ヒントで置いた <strong>🔒 ロック済みピースを残して</strong>、ほかのピースだけ最初の位置に戻します。</p>
+ <label class="reset-all-choice"><input id="reset-all-check" type="checkbox"><span><strong>全ピースを初期配置に戻す</strong><small>チェックするとヒントのロックも解除されます。ヒント使用回数は戻りません。</small></span></label>
+ <div class="reset-actions"><button type="button" class="act" id="reset-cancel">キャンセル</button><button type="button" class="act primary" id="reset-confirm">やり直す</button></div>
+</dialog>
 
 <dialog id="piece-list"><h2>ピース一覧</h2><p>全ピースは最初からケースの周囲に並んでいます。探したいピースをタップすると、その場所へ移動します。</p><div id="piece-list-body" class="piece-grid"></div><div class="piece-list-actions"><button type="button" class="act" id="piece-list-pack">ケースの周りに整列</button><button type="button" class="act primary" id="piece-list-close">とじる</button></div></dialog>
 
@@ -506,6 +524,41 @@ function hintRevealed(){
  const allowed=new Set(ldata().pieces.map(p=>p.id));
  return Array.isArray(raw) ? [...new Set(raw.map(Number))].filter(id=>Number.isInteger(id)&&allowed.has(id)).slice(0,hintLimit()) : [];
 }
+// v25: Revealing and locking are separate. A full reset clears only the locks;
+// the v18 hint ledger remains persistent and never refills a hint allowance.
+function isAtHintGoal(id){
+ const p=piece(Number(id));return !!p&&!!state.placed?.[id]&&sameCells(state.placed[id],p.goal);
+}
+function normalizeHintLocks(){
+ const available=new Set(hintRevealed());
+ state.hintLocked=[...new Set((Array.isArray(state.hintLocked)?state.hintLocked:[]).map(Number))]
+  .filter(id=>available.has(id)&&isAtHintGoal(id));
+}
+function isHintLocked(id){return !!state.hintLocked?.includes(Number(id))&&isAtHintGoal(id)}
+function lockMark(cells){
+ const b=bnds(cells,kind()),x=b.maxx-.09,y=b.miny+.10;
+ // Single compact vector icon, with no layout effect and no hit target.
+ return `<g pointer-events="none" transform="translate(${x} ${y})">
+ <circle cx="0" cy="0" r=".25" fill="#fffcef" stroke="#d3a446" stroke-width=".055"/>
+ <path d="M-.09 -.015v-.078a.09.09 0 0 1 .18 0v.078" fill="none" stroke="#916a16" stroke-width=".043" stroke-linecap="round"/>
+ <rect x="-.115" y="-.025" width=".23" height=".153" rx=".025" fill="#f4b83f" stroke="#916a16" stroke-width=".03"/>
+ </g>`;
+}
+function carryLocksInto(restored,lockedIds){
+ const oldPositions=Object.fromEntries(lockedIds.filter(id=>state.placed[id]).map(id=>[id,clone(state.placed[id])]));
+ const positions=workspaceLayout();
+ // Preserve locked pieces even when an old undo snapshot holds overlapping trial pieces.
+ const lockedCells=new Set(Object.values(oldPositions).flat().map(k));
+ for(const [id,cells] of Object.entries(restored.placed||{})){
+  if(lockedIds.includes(Number(id)))continue;
+  if(cells.some(c=>lockedCells.has(k(c)))){delete restored.placed[id];restored.loose[id]=positions[id];}
+ }
+ for(const [id,cells] of Object.entries(oldPositions)){
+  restored.placed[id]=cells;delete restored.loose[id];
+ }
+ restored.hintLocked=[...new Set([...(restored.hintLocked||[]),...lockedIds])];
+ return restored;
+}
 
 // v16: the case stays in the center, surrounded by a compact ring of all pieces.
 // All physical piece geometry and orientations are untouched; only loose positions change.
@@ -565,8 +618,15 @@ function ensureLooseState(resetLoose=false){
  const next={};for(const id of missing)next[id]=migrate||!state.loose[id]?fresh[id]:state.loose[id];
  state.loose=next;state.layoutVersion=LOOSE_LAYOUT_VERSION;
 }
-function initialState(){let base={placed:{},loose:{},flipped:{},finished:false};state=base;ensureLooseState(true);return clone(base)}
-function load(){state=clone(all[sskey()]||initialState());state.placed=state.placed||{};state.flipped=state.flipped||{};state.loose=state.loose||{};ensureLooseState(false);history=[];selected=null;preview=null;drag=null;chapterPage=0;wonShown=false;save();}
+function initialState(){let base={placed:{},loose:{},flipped:{},hintLocked:[],finished:false};state=base;ensureLooseState(true);return clone(base)}
+function load(){
+ const saved=all[sskey()];state=clone(saved||initialState());
+ state.placed=state.placed||{};state.flipped=state.flipped||{};state.loose=state.loose||{};
+ // Older v24 saves have no hintLocked field. Recover only hints still at their revealed goal.
+ if(!Array.isArray(state.hintLocked))state.hintLocked=hintRevealed().filter(id=>isAtHintGoal(id));
+ normalizeHintLocks();ensureLooseState(false);
+ history=[];selected=null;preview=null;drag=null;chapterPage=0;wonShown=false;save();
+}
 function save(){all[sskey()]=state;try{localStorage.setItem(KEY,JSON.stringify(all))}catch(e){}}
 function kind(){return BOOK[mode].kind}
 function piece(id){return ldata().pieces.find(p=>p.id===id)}
@@ -797,7 +857,7 @@ function renderBoard(){let l=ldata(),svg=$('board');applyCamera();
  let outline=`<path d="${outerPath(l.target,kind())}" fill="none" stroke="#367fa9" stroke-width=".112" stroke-linecap="round" stroke-linejoin="round" pointer-events="none"/>`;
  const hideDrag=(id)=>drag&&drag.moved&&Number(id)===drag.id;
  let loose=Object.entries(state.loose||{}).filter(([id])=>!hideDrag(id)).map(([id,c])=>`<g data-piece="${id}" style="cursor:grab">${glyph(c,kind(),Number(id))}${Number(id)===selected?`<path d="${outerPath(c,kind())}" stroke="#ffc944" stroke-width=".13" fill="none" pointer-events="none"/>`:''}<path d="${c.map(p=>path(poly(p,kind()))).join(' ')}" fill="transparent" stroke="none" pointer-events="all"/></g>`).join('');
- let placed=Object.entries(state.placed).filter(([id])=>!hideDrag(id)).map(([id,c])=>`<g data-piece="${id}" style="cursor:grab">${glyph(c,kind(),Number(id))}${Number(id)===selected?`<path d="${outerPath(c,kind())}" stroke="#ffc944" stroke-width=".13" fill="none" pointer-events="none"/>`:''}<path d="${c.map(p=>path(poly(p,kind()))).join(' ')}" fill="transparent" stroke="none" pointer-events="all"/></g>`).join('');
+ let placed=Object.entries(state.placed).filter(([id])=>!hideDrag(id)).map(([id,c])=>`<g data-piece="${id}" style="cursor:${isHintLocked(id)?'not-allowed':'grab'}">${glyph(c,kind(),Number(id))}${isHintLocked(id)?lockMark(c):''}${Number(id)===selected?`<path d="${outerPath(c,kind())}" stroke="#ffc944" stroke-width=".13" fill="none" pointer-events="none"/>`:''}<path d="${c.map(p=>path(poly(p,kind()))).join(' ')}" fill="transparent" stroke="none" pointer-events="all"/></g>`).join('');
  let ghost='';
  if(drag&&drag.moved&&drag.ghostCells){
    if(drag.candidate)ghost=`<g pointer-events="none">${glyph(drag.candidate.cells,kind(),drag.id,{opacity:.86,ghost:true})}</g>`;
@@ -820,31 +880,53 @@ function renderMeta(){let l=ldata(),n=Object.keys(state.placed).length;$('family
  $('hint').setAttribute('aria-label',`ヒント使用 ${usedHintIds.length} / ${maxHints} ピース。各問題につき最大約4分の1まで`);
  $('hint').title=`この問題では最大${maxHints}ピースまで。戻す・やり直すでも使用数は戻りません。`;
  // A revealed piece can be helped into position again without revealing a new one.
- $('hint').disabled=!!state.finished || (usedHintIds.length>=maxHints&&usedHintIds.every(id=>!!state.placed[id]));
- $('stash').hidden=selected===null; $('undo').disabled=history.length===0; if($('piece-list').open)renderPieceList();
+ $('hint').disabled=!!state.finished || (usedHintIds.length>=maxHints&&usedHintIds.every(id=>isHintLocked(id)));
+ $('stash').hidden=selected===null||isHintLocked(selected); $('undo').disabled=history.length===0; if($('piece-list').open)renderPieceList();
  document.documentElement.style.setProperty('--accent','#3bc8ef');document.documentElement.style.setProperty('--accent-dark','#197ba5')
 }
-function renderPieceList(){const box=$('piece-list-body'); if(!box)return; box.innerHTML=ldata().pieces.map(p=>{const onboard=!!state.placed[p.id],current=p.id===selected;return `<button type="button" class="piece-chip ${onboard?'onboard':''} ${current?'current':''}" data-id="${p.id}" aria-label="ピース${p.id+1} ${onboard?'盤面':'余白'}">${svgPiece(shape(p.id),p.id)}<span>ピース ${p.id+1}</span><small>${onboard?'盤面':'余白'}</small></button>`}).join('')}
+function renderPieceList(){const box=$('piece-list-body'); if(!box)return; box.innerHTML=ldata().pieces.map(p=>{const onboard=!!state.placed[p.id],current=p.id===selected,locked=isHintLocked(p.id);return `<button type="button" class="piece-chip ${onboard?'onboard':''} ${current?'current':''}" data-id="${p.id}" aria-label="ピース${p.id+1} ${locked?'ヒントでロック':onboard?'盤面':'余白'}">${svgPiece(shape(p.id),p.id)}<span>ピース ${p.id+1}</span><small>${locked?'🔒 ロック':onboard?'盤面':'余白'}</small></button>`}).join('')}
 function renderAll(){renderMeta();renderBoard();renderTray()}
 function snapshot(){history.push(clone(state));if(history.length>35)history.shift()}
 function showToast(msg){let el=$('toast');el.textContent=msg;el.classList.add('on');clearTimeout(toastTimeout);toastTimeout=setTimeout(()=>el.classList.remove('on'),1700)}
 function select(id){selected=id;preview=null;renderAll()}
-function attempt(id,choice){if(!choice)return showToast('その近くには置けません。別の場所を試してみてね。');snapshot();state.placed[id]=choice.cells;delete state.loose[id];selected=null;preview=null;save();renderAll();checkWin();}
+function attempt(id,choice){if(isHintLocked(id))return showToast('🔒 ヒントのピースは固定されています。');if(!choice)return showToast('その近くには置けません。別の場所を試してみてね。');snapshot();state.placed[id]=choice.cells;delete state.loose[id];selected=null;preview=null;save();renderAll();checkWin();}
 function checkWin(){if(Object.keys(state.placed).length!==ldata().pieces.length||state.finished&&wonShown)return;
  let n=new Set([...ldata().fixed,...Object.values(state.placed).flat()].map(k));if(n.size!==ldata().target.length)return;
  if(!state.finished){state.finished=true;all['complete:'+sskey()]=true;save();renderChapterSelect();renderMeta()}
  wonShown=true;$('win-text').textContent=`${META[mode].name} · 挑戦${String(chapter+1).padStart(3,'0')}完成！ 全ピースがぴったり収まりました。`;$('win-next').textContent=chapter===BOOK[mode].levels.length-1?'最初の挑戦へ ↺':'次の挑戦へ ▶';$('win').showModal();
 }
 function returnSelected(){if(selected===null)return;
- snapshot();const packed=workspaceLayout([selected])[selected];delete state.placed[selected];state.loose[selected]=packed;state.finished=false;wonShown=false;preview=null;save();renderAll();showToast('ピースを余白へ戻しました。');}
-function undo(){if(!history.length)return;state=history.pop();selected=null;preview=null;wonShown=false;save();renderAll()}
-function reset(){snapshot();state=initialState();selected=null;preview=null;wonShown=false;save();renderChapterSelect();renderAll();showToast('この問題を最初からやり直します。')}
+ if(isHintLocked(selected))return showToast('🔒 ヒントのピースは余白へ戻せません。');
+ snapshot();const packed=workspaceLayout()[selected];delete state.placed[selected];state.loose[selected]=packed;state.finished=false;wonShown=false;preview=null;save();renderAll();showToast('ピースを余白へ戻しました。');}
+function undo(){
+ if(!history.length)return;
+ normalizeHintLocks();const locks=[...state.hintLocked];
+ const prior=history.pop();prior.placed=prior.placed||{};prior.loose=prior.loose||{};
+ state=carryLocksInto(prior,locks);normalizeHintLocks();ensureLooseState(false);
+ selected=null;preview=null;wonShown=false;save();renderAll();
+}
+function reset(){
+ $('reset-all-check').checked=false;
+ $('reset-dialog').showModal();
+}
+function confirmReset(){
+ const full=$('reset-all-check').checked;
+ normalizeHintLocks();const locks=full?[]:[...state.hintLocked];
+ if(full){history=[];}else{snapshot();}
+ const positions=Object.fromEntries(locks.map(id=>[id,clone(state.placed[id])]));
+ state=initialState();
+ for(const [id,cells] of Object.entries(positions)){state.placed[id]=cells;delete state.loose[id]}
+ state.hintLocked=locks;normalizeHintLocks();ensureLooseState(true);
+ selected=null;preview=null;drag=null;wonShown=false;save();
+ $('reset-dialog').close();renderChapterSelect();renderAll();
+ showToast(full?'全ピースを初期位置に戻しました。':'🔒 ヒントのピースを残してやり直しました。');
+}
 function hint(){
  if(state.finished)return;
  const l=ldata(),used=hintRevealed(),limit=hintLimit(),prior=new Set(used);
  // Previously revealed pieces may be repositioned after an undo/reset,
  // but they never count as additional hints. New reveals stop at limit.
- const ids=[...used.filter(id=>!state.placed[id]),
+ const ids=[...used.filter(id=>!isHintLocked(id)),
    ...(used.length<limit?l.pieces.filter(p=>!prior.has(p.id)&&!state.placed[p.id]).map(p=>p.id):[])];
  for(const id of ids){
    const p=piece(id),target=new Set(p.goal.map(k));
@@ -852,8 +934,9 @@ function hint(){
    if(!goalc)continue;
    snapshot();state.placed[id]=goalc.cells;delete state.loose[id];
    if(!prior.has(id))all[hintLedgerKey()]=[...used,id];
+   state.hintLocked=[...new Set([...(state.hintLocked||[]),id])];normalizeHintLocks();
    selected=null;preview=null;save();renderAll();
-   showToast(`ヒント：1ピース配置（${hintRevealed().length}/${limit}）`);checkWin();return;
+   showToast(`🔒 ヒントのピースをロック（${hintRevealed().length}/${limit}）`);checkWin();return;
  }
  if(used.length>=limit)showToast(`ヒントは上限 ${limit}ピースです。残りは自分で完成させよう！`);
  else showToast('ヒントの場所が埋まっています。少しピースを動かしてみてね。');
@@ -866,13 +949,13 @@ function onTrayDown(e){let tile=e.target.closest('.tile');if(!tile||e.button!==0
 function onTrayMove(e){}
 function onTrayUp(e){}
 function onBoardDown(e){if(e.button!==0)return;let el=e.target.closest('[data-piece]');
- if(el){e.preventDefault();let id=Number(el.getAttribute('data-piece')); let pt=eventPoint(e); selected=id; preview=null; const src=state.placed[id]?'board':'loose'; const original=clone(pieceCells(id)); drag={id,source:src,pid:e.pointerId,x:e.clientX,y:e.clientY,startPoint:pt,original,moved:false,candidate:null,ghostCells:original,options:candidates(id)}; $('board').setPointerCapture(e.pointerId); renderAll(); return;}
+ if(el){e.preventDefault();let id=Number(el.getAttribute('data-piece'));if(isHintLocked(id)){selected=null;renderAll();showToast('🔒 ヒントのピースは固定されています。');return;} let pt=eventPoint(e); selected=id; preview=null; const src=state.placed[id]?'board':'loose'; const original=clone(pieceCells(id)); drag={id,source:src,pid:e.pointerId,x:e.clientX,y:e.clientY,startPoint:pt,original,moved:false,candidate:null,ghostCells:original,options:candidates(id)}; $('board').setPointerCapture(e.pointerId); renderAll(); return;}
  if(camera.zoom>1.001){e.preventDefault();beginBoardPan(e);return;}
 }
 function onBoardMove(e){if(moveBoardPan(e))return;let d=drag;
  if(d){ if(d.pid!==e.pointerId)return; if(!d.moved&&Math.hypot(e.clientX-d.x,e.clientY-d.y)<7)return; d.moved=true; let now=eventPoint(e); if(!now||!d.startPoint)return; let dx=now.x-d.startPoint.x,dy=now.y-d.startPoint.y; d.ghostCells=movePhysicalCells(d.original,dx,dy); let centroid=centerOf(d.ghostCells); d.candidate=nearPoint(d.id,centroid,d.options); renderBoard(); return; }
 }
-function onBoardUp(e){if(finishBoardPan(e))return;let d=drag;if(!d||d.pid!==e.pointerId)return; const target=d.moved?d.candidate:null; const freeCells=d.moved?(d.ghostCells||d.original):d.original; clearDrag(); let changed=false; if(target){ if(!(d.source==='board'&&sameCells(target.cells,d.original))){ snapshot(); state.placed[d.id]=target.cells; delete state.loose[d.id]; changed=true; } }
+function onBoardUp(e){if(finishBoardPan(e))return;let d=drag;if(!d||d.pid!==e.pointerId)return;if(isHintLocked(d.id)){clearDrag();renderAll();return;} const target=d.moved?d.candidate:null; const freeCells=d.moved?(d.ghostCells||d.original):d.original; clearDrag(); let changed=false; if(target){ if(!(d.source==='board'&&sameCells(target.cells,d.original))){ snapshot(); state.placed[d.id]=target.cells; delete state.loose[d.id]; changed=true; } }
  else if(d.moved){ if(d.source==='board'){ if(!sameCells(freeCells,d.original)){ snapshot(); delete state.placed[d.id]; state.loose[d.id]=freeCells; changed=true; } } else { if(!sameCells(freeCells,d.original)){ snapshot(); state.loose[d.id]=freeCells; changed=true; } } }
  if(changed){ state.finished=false; wonShown=false; ensureLooseState(false); save(); renderAll(); checkWin(); }
  else renderAll(); }
@@ -966,6 +1049,11 @@ function sanitizePortableRecords(raw){
      clean[group][id]=cells;
     }
    }
+   // Old v24 records omit this field. Keep that distinction for one-time migration.
+   if(Array.isArray(record.hintLocked)){
+     clean.hintLocked=[...new Set(record.hintLocked.filter(id=>Number.isInteger(id)&&pieceMap.has(id)))]
+       .filter(id=>clean.placed[id]&&sameCells(clean.placed[id],level.pieces.find(p=>p.id===id).goal));
+   }
    out[key]=clean;
   }
  }
@@ -988,7 +1076,17 @@ function mergedPortableRecords(local,incoming){
   // if the counts tie, prefer the incoming device's arrangement.
   const a=Object.keys(old.placed||{}).length,b=Object.keys(value.placed||{}).length;
   const winner=b>=a?value:old;
-  merged[key]={...winner,finished:old.finished===true||value.finished===true};
+  const other=winner===value?old:value;
+  const combined={...winner,finished:old.finished===true||value.finished===true};
+  // Respect explicit full-reset (an empty lock array) in the chosen layout.
+  // Where the chosen placement matches a lock in the other device, safely retain it.
+  if(Array.isArray(winner.hintLocked)){
+   const extra=Array.isArray(other.hintLocked)?other.hintLocked.filter(id=>{
+     const placed=combined.placed?.[id];return !!placed&&placed.length&&other.placed?.[id]&&sameCells(placed,other.placed[id]);
+   }):[];
+   combined.hintLocked=[...new Set([...winner.hintLocked,...extra])];
+  }
+  merged[key]=combined;
  }
  // Completed puzzles never become uncompleted when two devices are combined.
  for(const [key,value] of Object.entries(merged)){
@@ -1051,6 +1149,7 @@ $('sync-file').addEventListener('change',e=>previewPortableFile(e.target.files?.
 $('sync-import-apply').addEventListener('click',applyPortableImport);
 
 $('stash').addEventListener('click',returnSelected);$('undo').addEventListener('click',undo);$('reset').addEventListener('click',reset);$('hint').addEventListener('click',hint);
+$('reset-cancel').addEventListener('click',()=>$('reset-dialog').close());$('reset-confirm').addEventListener('click',confirmReset);
 $('page-prev').addEventListener('click',()=>pageChange(-1));$('page-next').addEventListener('click',()=>pageChange(1));
 $('tray').addEventListener('pointerdown',onTrayDown);$('tray').addEventListener('pointermove',onTrayMove);$('tray').addEventListener('pointerup',onTrayUp);$('tray').addEventListener('pointercancel',()=>{});
 $('tray').addEventListener('keydown',e=>{let el=e.target.closest('.tile');if(el&&(e.key==='Enter'||e.key===' ')){e.preventDefault();let id=Number(el.dataset.id);select(id)}});
