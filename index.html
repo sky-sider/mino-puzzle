@@ -535,13 +535,27 @@ function normalizeHintLocks(){
   .filter(id=>available.has(id)&&isAtHintGoal(id));
 }
 function isHintLocked(id){return !!state.hintLocked?.includes(Number(id))&&isAtHintGoal(id)}
+function lockAnchor(cells){
+ // A badge centered on an actual filled unit cell is guaranteed to stay inside
+ // the piece, unlike a badge placed at a corner of the piece's bounding box.
+ const infos=cells.map(cell=>{
+  const vertices=poly(cell,kind());
+  return {
+   x:vertices.reduce((sum,p)=>sum+p[0],0)/vertices.length,
+   y:vertices.reduce((sum,p)=>sum+p[1],0)/vertices.length
+  };
+ });
+ // Choose the top-rightmost occupied unit cell; its center is safely in the piece.
+ infos.sort((a,b)=>a.y-b.y||b.x-a.x);
+ return infos[0];
+}
 function lockMark(cells){
- const b=bnds(cells,kind()),x=b.maxx-.09,y=b.miny+.10;
- // Single compact vector icon, with no layout effect and no hit target.
- return `<g pointer-events="none" transform="translate(${x} ${y})">
- <circle cx="0" cy="0" r=".25" fill="#fffcef" stroke="#d3a446" stroke-width=".055"/>
- <path d="M-.09 -.015v-.078a.09.09 0 0 1 .18 0v.078" fill="none" stroke="#916a16" stroke-width=".043" stroke-linecap="round"/>
- <rect x="-.115" y="-.025" width=".23" height=".153" rx=".025" fill="#f4b83f" stroke="#916a16" stroke-width=".03"/>
+ const a=lockAnchor(cells);
+ // The entire badge including its stroke fits within even a unit triangle.
+ return `<g pointer-events="none" transform="translate(${a.x} ${a.y})">
+ <circle cx="0" cy="0" r=".20" fill="#fffcef" stroke="#d3a446" stroke-width=".04"/>
+ <path d="M-.08 -.015v-.07a.08.08 0 0 1 .16 0v.07" fill="none" stroke="#916a16" stroke-width=".04" stroke-linecap="round"/>
+ <rect x="-.102" y="-.022" width=".204" height=".136" rx=".022" fill="#f4b83f" stroke="#916a16" stroke-width=".028"/>
  </g>`;
 }
 function carryLocksInto(restored,lockedIds){
@@ -948,8 +962,74 @@ function clearDrag(){drag=null;preview=null;hideFloater();renderBoard()}
 function onTrayDown(e){let tile=e.target.closest('.tile');if(!tile||e.button!==0)return; e.preventDefault();let id=Number(tile.dataset.id);selected=id;renderAll();}
 function onTrayMove(e){}
 function onTrayUp(e){}
-function onBoardDown(e){if(e.button!==0)return;let el=e.target.closest('[data-piece]');
- if(el){e.preventDefault();let id=Number(el.getAttribute('data-piece'));if(isHintLocked(id)){selected=null;renderAll();showToast('🔒 ヒントのピースは固定されています。');return;} let pt=eventPoint(e); selected=id; preview=null; const src=state.placed[id]?'board':'loose'; const original=clone(pieceCells(id)); drag={id,source:src,pid:e.pointerId,x:e.clientX,y:e.clientY,startPoint:pt,original,moved:false,candidate:null,ghostCells:original,options:candidates(id)}; $('board').setPointerCapture(e.pointerId); renderAll(); return;}
+// v29: Geometry-based hit testing. Paint, outlines and hint badges must never
+// enlarge the clickable area of a locked piece into a movable neighbor.
+function pointWithinCell(pt,vertices){
+ const epsilon=1e-7;let positive=false,negative=false;
+ for(let i=0;i<vertices.length;i++){
+  const a=vertices[i],b=vertices[(i+1)%vertices.length];
+  const cross=(b[0]-a[0])*(pt.y-a[1])-(b[1]-a[1])*(pt.x-a[0]);
+  if(cross>epsilon)positive=true;
+  if(cross<-epsilon)negative=true;
+  if(positive&&negative)return false;
+ }
+ return true;
+}
+function distanceToCellBorder(pt,vertices){
+ let nearest=Infinity;
+ for(let i=0;i<vertices.length;i++){
+  const a=vertices[i],b=vertices[(i+1)%vertices.length];
+  const dx=b[0]-a[0],dy=b[1]-a[1];
+  const t=Math.max(0,Math.min(1,((pt.x-a[0])*dx+(pt.y-a[1])*dy)/Math.max(1e-9,dx*dx+dy*dy)));
+  nearest=Math.min(nearest,Math.hypot(pt.x-(a[0]+dx*t),pt.y-(a[1]+dy*t)));
+ }
+ return nearest;
+}
+function hitPieceAt(pt){
+ if(!pt)return null;
+ const pieces=[...Object.entries(state.loose||{}),...Object.entries(state.placed||{})];
+ const editableInside=[],lockedInside=[],editableNear=[],lockedNear=[];
+ for(let order=0;order<pieces.length;order++){
+  const [key,cells]=pieces[order],id=Number(key),locked=isHintLocked(id);
+  let inside=false,minDist=Infinity;
+  for(const cell of cells){
+   const vertices=poly(cell,kind());
+   if(pointWithinCell(pt,vertices)){inside=true;minDist=0;break;}
+   minDist=Math.min(minDist,distanceToCellBorder(pt,vertices));
+  }
+  const hit={id,order,distance:minDist};
+  if(inside)(locked?lockedInside:editableInside).push(hit);
+  else (locked?lockedNear:editableNear).push(hit);
+ }
+ const topmost=a=>a.length?a.reduce((best,v)=>!best||v.order>best.order?v:best,null):null;
+ // Always choose an actually touched movable piece over any neighboring locked
+ // artwork, even when that artwork is the SVG event target.
+ if(editableInside.length)return topmost(editableInside).id;
+ const scale=$('board').getScreenCTM();
+ const pxPerUnit=scale?Math.hypot(scale.a,scale.b):30;
+ const nearThreshold=10/Math.max(1,pxPerUnit);
+ editableNear.sort((a,b)=>a.distance-b.distance||b.order-a.order);
+ // If a finger just straddles a common edge, favor the movable neighbor.
+ if(lockedInside.length){
+  if(editableNear[0]&&editableNear[0].distance<=nearThreshold*.55)return editableNear[0].id;
+  return topmost(lockedInside).id;
+ }
+ if(editableNear[0]&&editableNear[0].distance<=nearThreshold)return editableNear[0].id;
+ return null;
+}
+function onBoardDown(e){if(e.button!==0)return;
+ const pt=eventPoint(e),id=hitPieceAt(pt);
+ if(id!==null){
+  e.preventDefault();
+  if(isHintLocked(id)){
+   selected=null;renderAll();showToast('🔒 ヒントのピースは固定されています。');return;
+  }
+  selected=id;preview=null;
+  const src=state.placed[id]?'board':'loose',original=clone(pieceCells(id));
+  drag={id,source:src,pid:e.pointerId,x:e.clientX,y:e.clientY,startPoint:pt,
+   original,moved:false,candidate:null,ghostCells:original,options:candidates(id)};
+  $('board').setPointerCapture(e.pointerId);renderAll();return;
+ }
  if(camera.zoom>1.001){e.preventDefault();beginBoardPan(e);return;}
 }
 function onBoardMove(e){if(moveBoardPan(e))return;let d=drag;
